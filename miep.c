@@ -631,6 +631,6 @@ int main(int argc,char *argv[])
         go_to(1);
         gameint();
     } else {
-        printf("Usage: gamelinux file\n");
+        printf("Usage: miep file\n");
     }
 }
