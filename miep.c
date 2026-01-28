@@ -91,7 +91,7 @@ char operator2()
     case '=':
     case '+':
     case '-':
-    case'*':
+    case '*':
     case '/':
         s++;
         return(c);
