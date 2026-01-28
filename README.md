@@ -10,17 +10,17 @@ GAME言語は今は廃れてしまいましたが、1980年前後にマイコン
 
 コンパイル、インストール、実行
 
-カレントディレクトリにgamec.cを置き、コンソールで、cc gamec.c -o gamecとしてコンパイルして下さい。
+カレントディレクトリにmiep.cを置き、コンソールで、cc miep.c -o miepとしてコンパイルして下さい。
 
-インストールは、sudo cp gamec /usr/bin/として、/usr/bin/にgamecを配置するだけです。
+インストールは、sudo cp miep /usr/bin/として、/usr/bin/にmiepを配置するだけです。
 
-実行は、gamec [file.gm]として動かして下さい。
+実行は、miep [file.gm]として動かして下さい。
 
-gamec では、シバンをつけることができます。シバンを付けて実行権を付けると、シェルからスクリプトをコマンドのように実行できます。
+miep では、シバンをつけることができます。シバンを付けて実行権を付けると、シェルからスクリプトをコマンドのように実行できます。
 
 シバンのサンプル
 
-#!/usr/bin/gamec
+#!/usr/bin/env miep
 
 使い方
 
@@ -42,7 +42,7 @@ syntax.docにあります。
 
 ・2023年1月31日 16ビット配列の取得の所にバグがあったので訂正。
 
-・2023年2月1日　マイナーチェンジ＆名前をgamelinuxにする。
+・2023年2月1日　マイナーチェンジ。
 
 ・2023年2月2日　バグ修正 ver 0.9
 
@@ -68,17 +68,17 @@ This program lacks sufficient error checking.
 
 Compile, Install, and Run
 
-Place gamec.c in the current directory and compile it in the console with cc gamec.c -o gamec.
+Place miep.c in the current directory and compile it in the console with cc miep.c -o miep.
 
-To install, simply place gamec in /usr/bin/ with sudo cp gamec /usr/bin/.
+To install, simply place miep in /usr/local/bin/ with sudo cp miep /usr/local/bin/.
 
-To run, run it as gamec [file.gm].
+To run, run it as miep [file.gm].
 
-You can add a shebang to gamec. By adding a shebang and granting execution permissions, you can run the script like a command from a Linux shell.
+You can add a shebang to miep. By adding a shebang and granting execution permissions, you can run the script like a command from a Linux shell.
 
 Shebang Sample
 
-#!/usr/bin/gamec
+#!/usr/bin/env miep
 
 Usage
 
@@ -100,7 +100,7 @@ History
 
 - January 31, 2023: Fixed a bug in obtaining 16-bit arrays.
 
-- February 1, 2023: Minor changes and name changed to gamelinux.
+- February 1, 2023: Minor changes.
 
 ・February 2, 2023: Bug fixes, version 0.9
 
@@ -112,7 +112,7 @@ History
 
 ・July 24, 2024: Changed number support from ushort to short. version 1.0.0
 
-・August 24, 2024: Changed the single-character input call from getch() to getchar(), making it compatible with general C language. The name was changed to gamec. version 1.0.1
+・August 24, 2024: Changed the single-character input call from getch() to getchar(), making it compatible with general C language. version 1.0.1
 
 
 Translated with DeepL.com (free version)
