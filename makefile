@@ -1,5 +1,5 @@
-gamec: gamec.c miep2.py
-	cc -o gamec gamec.c
-	sudo cp gamec /usr/local/bin/
-	chmod +x miep2.py
-	sudo cp miep2.py /usr/local/bin/miep2
+miep: miep.c gamecomp.py
+	gcc -o miep miep.c
+	sudo cp miep /usr/local/bin/
+	chmod +x gamecomp.py
+	sudo cp gamecomp.py /usr/local/bin/gamecomp
