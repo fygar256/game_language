@@ -14,6 +14,8 @@ GAME言語は今は廃れてしまいましたが、1980年前後にマイコン
 
 コンパイル、インストール、実行
 
+MIEPと名前がついています。'MIEP'とは、1980年前半に僕がGAME言語を参考にして作った言語処理系（インタプリタ・コンパイラ・エディタ）の名前ですが、当時のGAME言語にリスペクトを込めて今回のGAME言語インタプリタも、MIEPという名前にしました。（同姓同名か）
+
 カレントディレクトリにmiep.cを置き、コンソールで、cc miep.c -o miepとしてコンパイルして下さい。
 
 インストールは、sudo cp miep /usr/bin/として、/usr/bin/にmiepを配置するだけです。
@@ -65,6 +67,8 @@ syntax.docにあります。
 I wrote an interpreter for the nostalgic GAME language in C.
 
 There's little documentation, so it's a little different from the original, but please bear with me as it's an implementation on Linux.
+
+It's named MIEP. 'MIEP' is the name of a language processing system (interpreter/compiler/editor) that I created in the early 1980s, based on the GAME language. As a sign of respect for the GAME language of that time, I named this GAME language interpreter MIEP. (they have the same name)
 
 The GAME language is now obsolete, but around 1980 it was all the rage as a processing system that could be easily used on microcontrollers. I also had fun creating my own interpreter/compiler based on the GAME language back then.
 
