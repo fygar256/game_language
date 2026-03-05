@@ -68,7 +68,7 @@ I wrote an interpreter for the nostalgic GAME language in C.
 
 There's little documentation, so it's a little different from the original, but please bear with me as it's an implementation on Linux.
 
-It's named MIEP. 'MIEP' is the name of a language processing system (interpreter/compiler/editor) that I created in the early 1980s, based on the GAME language. As a sign of respect for the GAME language of that time, I named this GAME language interpreter MIEP. (they have the same name)
+It's named MIEP. 'MIEP' is the name of a language processing system (interpreter/compiler/editor) that I created in the early 1980s, based on the GAME language. As a sign of respect for the GAME language of that time, I named this GAME language interpreter MIEP also. It's the sound of a cat meowing in Dutch.
 
 The GAME language is now obsolete, but around 1980 it was all the rage as a processing system that could be easily used on microcontrollers. I also had fun creating my own interpreter/compiler based on the GAME language back then.
 
