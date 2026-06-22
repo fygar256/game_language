@@ -21,7 +21,7 @@ def out_tailer():
 
 def gethexstr(s,idx):
     d="0x"
-    while idx<len(s) and s[idx] in '0123456789ABCDEF':
+    while idx<len(s) and s[idx].upper() in '0123456789ABCDEF':
         d=d+s[idx]
         idx+=1
     return (d,idx)
@@ -36,7 +36,7 @@ def getdcmstr(s,idx):
 def term(s,idx):
     u=''
     if idx>=len(s):
-        return s,len(s)
+        return "0",len(s)
 
     if s[idx]=='(':
         (o,idx)=expression(s,idx+1)
@@ -75,7 +75,7 @@ def term(s,idx):
         u="(reminder)"
         return u,idx
 
-    elif s[idx]=='$' and not xdigit(s[idx+1]):
+    elif s[idx]=='$':
         return "getchar()",idx+1
 
     elif s[idx]=='"':   # 文字定数
@@ -89,7 +89,9 @@ def term(s,idx):
         if (idx+1)<len(s) and s[idx+1]==':': # 8 bit array
             l=s[idx].upper()
             p,idx=expression(s,idx+2)
-            o="memory["+l+"+"+p+"]"
+            if idx<len(s) and s[idx]==')':
+                idx+=1
+            o="memory["+l+"+("+p+")]"
             return o,idx
 
         elif (idx+1)<len(s) and s[idx+1]=='(': # 16 bit array
@@ -101,7 +103,7 @@ def term(s,idx):
         else: # variable
             idx+=1
             return (s[idx-1].upper()),idx
-    return s,idx+1
+    return "0",idx+1
 
 def expression0(s,idx):
     (o,idx)=term(s,idx)
@@ -229,8 +231,8 @@ def parse(l):
                 if s[idx:idx+2]==')=':
                     idx+=2
                     w,idx=expression(s,idx)
-                    print("memory["+ch+"+"+v+"]=",end='')
-                    print(f"{w}; ",end='')
+                    print("memory["+ch+"+"+v+"]=(",end='')
+                    print(f"{w}); ",end='')
 
             elif s[1]=='(': # 16 bit array
                 ch=s[0].upper()
@@ -238,8 +240,8 @@ def parse(l):
                 if s[idx:idx+2]==')=':
                     idx+=2
                     w,idx=expression(s,idx)
-                    print("*((short *)(&memory["+ch+"+"+v+"*2]))=",end='')
-                    print(f"{w}; ",end='')
+                    print("*((short *)(&memory["+ch+"+"+v+"*2]))=(",end='')
+                    print(f"{w}); ",end='')
 
             elif s[1]=='=': # assignment
                 ch=s[0].upper()
