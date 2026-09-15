@@ -134,9 +134,9 @@ GAME言語からCへ変換するコンパイラをpythonで書いてみました
 
 GAME言語コンパイラ -  beam.py
 
-`./beam.py file.gm >out.c`とすると、GAME言語で書かれたfile.gmをCのソースに変換し、out.cに出力します。
+`./beam.py file.gm`とすると、GAME言語で書かれたfile.gmをCのソースに変換し、file.cに出力し,
 
-out.cはccでコンパイル可能です。 `cc out.c -o a.out`、`./a.out`で実行することが出来ます。
+その後、gccでコンパイルし、`file`という実行ファイルを作ります。
 
 一般に冗長さを許せば、低級なプログラム言語で書かれたソースは、より高級なプログラム言語に翻訳することが容易です。
 
@@ -164,13 +164,11 @@ FreeBSDシステム用に、コールスタックを１６バイトアライメ�
 
 # in English 
 
-I wrote a compiler in python to convert from GAME language to C.
+I wrote a compiler in python to convert from GAME language to C and binary.
 
 GAME language compiler - beam.py
 
-`. /beam.py file.gm >out.c` will convert file.gm written in GAME language to C source and output to out.c.
-
-out.c can be compiled with cc. `cc out.c -o a.out`, `. /a.out` to execute it.
+`. /beam.py file.gm` will convert file.gm written in GAME language to C source and output to `file.c` and executable `file`.
 
 In general, if verbosity is allowed, sources written in lower-level programming languages can be easily translated into higher-level programming languages.
 
