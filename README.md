@@ -138,17 +138,13 @@ GAME言語コンパイラ -  beam.py
 
 最適化はできていません。エラーチェックが甘いです。
 
-ccのインラインアセンブラを使用しているので、x86_64 linux/FreeBSDシステム用です。
+beam.pyの出力するCコードは100%機械独立です。
 
-!=n(gosub)と] (ret) が機械依存部で、それ以外は機械独立です。完全に機械独立にし、一般のCコンパイラに掛けることができるようにすることが今後の課題ですが、C言語の仕様上、サブルーチン呼び出しを記述するのは難しいかも知れません。
-
-一応完成 version 1.0.0 2024/8/26
-
-ちょっとヴァージョンアップ、改名。 version 1.0.1 2024/8/27
-
-剰余計算結果取得のバグ修正 version1.0.2 2025/04/11
-
-FreeBSDシステム用に、コールスタックを１６バイトアライメントに調整するデバッグ。 version 1.0.3　2025/08/31
+- 一応完成 version 1.0.0 2024/8/26
+- ちょっとヴァージョンアップ、改名。 version 1.0.1 2024/8/27
+- 剰余計算結果取得のバグ修正 version1.0.2 2025/04/11
+- FreeBSDシステム用に、コールスタックを１６バイトアライメントに調整するデバッグ。 version 1.0.3　2025/08/31
+- 100%機械独立のCコードを出力するようにした。version 1.2.0
 
 # 今後の課題の問題点
 
@@ -170,9 +166,7 @@ In general, if verbosity is allowed, sources written in lower-level programming 
 
 It is not optimized. Error checking is lax.
 
-It uses the cc inline assembler and is for x86_64 linux/FreeBSD systems.
-
-! =n(gosub) and] (ret) are machine dependent parts, the rest are machine independent. It is my future task to make it completely machine-independent so that it can be hung on a general C compiler, but it may be difficult to write subroutine calls due to the C language specification.
+C code that will be emitted from beam.py is 100% machine independent.
 
 Any way completed. version 1.0.0 8/26/2024
 
