@@ -13,6 +13,8 @@ lines = []
 cp = 0
 loopstack = []
 outfile = None
+gosub_count = 0     # number of gosub call sites (return-point ids)
+RETSTACK_SIZE = 256 # depth of the gosub return stack
 
 def p(s, end='\n'):
     """Write to outfile, mimicking print."""
@@ -28,11 +30,21 @@ def out_header():
     p("static short A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z,reminder;")
     p("static unsigned char memory[65536]={0};")
     p("static int tmp;")
+    p(f"static int retstack[{RETSTACK_SIZE}];")
+    p("static int retsp=0;")
     p("int main() {")
     return
 
 def out_tailer():
     p("    return 0;")
+    # Return dispatcher: pop a return-point id and jump to its label.
+    p("game_return:")
+    p("    if (retsp<=0) exit(0);")
+    p("    switch (retstack[--retsp]) {")
+    for k in range(gosub_count):
+        p(f"    case {k}: goto r{k};")
+    p("    }")
+    p("    exit(0);")
     p("}")
     return
 
@@ -328,7 +340,7 @@ def adjust_go(n):
     return -1
 
 def ret():
-    p("__asm__(\"ret\"); ", end='')
+    p("goto game_return; ", end='')
 
 def if__(o):
     p(f"if (!({o})) ", end='')
@@ -336,9 +348,13 @@ def if__(o):
     return
 
 def gosub(n):
-    p("__asm__ (\"push %rax\"); ", end='')
-    p(f"__asm__ goto(\"call %l[l{adjust_go(n)}]\" ::: : l{adjust_go(n)}); ", end="")
-    p("__asm__ (\"pop %rax\"); ", end='')
+    global gosub_count
+    k = gosub_count
+    gosub_count += 1
+    p(f"if (retsp>={RETSTACK_SIZE}) {{ fprintf(stderr,\"gosub stack overflow\\n\"); exit(1); }} ", end='')
+    p(f"retstack[retsp++]={k}; ", end='')
+    goto(n)
+    p(f"r{k}: ; ", end='')
     return
 
 def goto(n):
@@ -393,7 +409,8 @@ def pass2(file):
     return
 
 def compile_to_c(srcfile, cfile="file.c"):
-    global outfile
+    global outfile, gosub_count
+    gosub_count = 0
     outfile = open(cfile, "w")
     try:
         out_header()
@@ -409,8 +426,6 @@ def compile_to_c(srcfile, cfile="file.c"):
 def compile_to_binary(cfile="file.c", binary=None):
     if binary is None:
         binary = "a.out"
-    # Use gcc. Need -fgnu-tm or just standard for asm goto? asm goto is supported in gcc.
-    # Also may need -no-pie or specific flags if labels issue, but try basic.
     cmd = ["gcc", "-o", binary, cfile, "-O0"]
     print(f"Running: {' '.join(cmd)}")
     try:
