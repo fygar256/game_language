@@ -6,7 +6,7 @@ so I stopped development and left the original program as 'BlackJick', since it 
 
 Jick is a black cat I used to have, and I left it on the wall of the kindergarten next door and went to the convenience store, and it disappeared. I dedicate this program to Jick.
 
-It is written in python.
+It is written in python and rewrote in GAME language.
 
 Python: Download the script. run it as `python blackjick.py`
 
