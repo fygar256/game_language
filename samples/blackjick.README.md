@@ -8,7 +8,7 @@ Jick is a black cat I used to have, and I left it on the wall of the kindergarte
 
 It is written in python and rewrote in GAME language.
 
-Python: Download the script. run it as `python blackjick.py`
+Python: Download the script. run it as `miep.py blackjick.gm` or compile it as `beam.py blackjick.gm` and run as `./blackjick`.
 
 This program is a basic artificial intelligence version that makes predictions using classical probability theory.
 
