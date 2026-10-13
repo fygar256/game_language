@@ -10,8 +10,10 @@ Semantics follow the miep.py interpreter:
   * unary + is abs(), ' is random (0..n-1), % is the last remainder
   * '/' keeps the remainder and the expression continues after it
   * FOR runs its body at least once and loops while var <= limit
-    (the limit is evaluated once); *FM1 enables skipping when start > limit
-  * *QU quits, *FM sets FOR mode, other * commands are ignored
+    (the limit is evaluated once)
+  * &n is 1 while the key with key code n is pressed (read from /dev/input/eventN;
+    MIEP_KBD selects the device), like miep.c
+  * *QU quits, *WT n waits n milliseconds, other * commands (including *FM) are ignored
 """
 import sys
 import re
@@ -25,6 +27,95 @@ outfile = None
 gosub_count = 0     # number of gosub call sites (return-point ids)
 RETSTACK_SIZE = 256 # depth of the gosub return stack
 FORSTACK_SIZE = 64  # max nesting depth of FOR loops
+
+# Key input device (& term) and *WT; same behavior as miep.c
+KBD_C = r"""
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <termios.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#ifdef __linux__
+#include <linux/input.h>
+#else
+#include <dev/evdev/input.h>
+#endif
+#define KBD_MAX 16
+static int kbdFd[KBD_MAX];
+static int kbdCount=-1;
+static unsigned char keyState[KEY_CNT];  /* bit0: held, bit1: pressed since last check */
+static struct termios ttySaved;
+static int ttyChanged=0;
+static void ttyRestore(void) {
+    if (ttyChanged) { tcflush(0,TCIFLUSH); tcsetattr(0,TCSANOW,&ttySaved); ttyChanged=0; }
+}
+static void kbdSignal(int sig) { ttyRestore(); signal(sig,SIG_DFL); raise(sig); }
+static int isKeyboard(int fd) {
+    unsigned long bits[KEY_CNT/(8*sizeof(long))+1];
+    size_t w=8*sizeof(long);
+    memset(bits,0,sizeof(bits));
+    if (ioctl(fd,EVIOCGBIT(EV_KEY,sizeof(bits)),bits)<0) return 0;
+    return ((bits[KEY_A/w]>>(KEY_A%w))&1) && ((bits[KEY_Z/w]>>(KEY_Z%w))&1) &&
+           ((bits[KEY_ENTER/w]>>(KEY_ENTER%w))&1);
+}
+static void kbdOpen(void) {
+    const char *dev=getenv("MIEP_KBD");
+    char path[64];
+    int i,fd,denied=0;
+    kbdCount=0;
+    if (dev!=NULL && *dev!='\0') {
+        fd=open(dev,O_RDONLY|O_NONBLOCK);
+        if (fd<0) { fprintf(stderr,"%s: %s\n",dev,strerror(errno)); exit(1); }
+        kbdFd[kbdCount++]=fd;
+    } else {
+        for (i=0;i<64 && kbdCount<KBD_MAX;i++) {
+            snprintf(path,sizeof(path),"/dev/input/event%d",i);
+            fd=open(path,O_RDONLY|O_NONBLOCK);
+            if (fd<0) { if (errno==EACCES) denied=1; continue; }
+            if (isKeyboard(fd)) kbdFd[kbdCount++]=fd; else close(fd);
+        }
+        if (kbdCount==0) {
+            fprintf(stderr,denied ? "/dev/input/event*: Permission denied\n"
+                                  : "No keyboard found in /dev/input/event*\n");
+            exit(1);
+        }
+    }
+    if (isatty(0) && tcgetattr(0,&ttySaved)==0) {
+        struct termios t=ttySaved;
+        t.c_lflag&=~(ECHO|ICANON);
+        tcsetattr(0,TCSANOW,&t);
+        ttyChanged=1;
+        atexit(ttyRestore);
+        signal(SIGINT,kbdSignal); signal(SIGTERM,kbdSignal); signal(SIGHUP,kbdSignal);
+    }
+}
+static short game_key(int code) {
+    struct input_event ev;
+    int i;
+    short v;
+    if (kbdCount<0) kbdOpen();
+    for (i=0;i<kbdCount;i++) {
+        while (read(kbdFd[i],&ev,sizeof(ev))==(ssize_t)sizeof(ev)) {
+            if (ev.type==EV_KEY && ev.code<KEY_CNT) {
+                if (ev.value!=0) keyState[ev.code]|=3; else keyState[ev.code]&=~1;
+            }
+        }
+    }
+    if (code<0 || code>=KEY_CNT) return 0;
+    v=(keyState[code]!=0);
+    keyState[code]&=~2;
+    return v;
+}
+static void game_wait(int ms) {
+    struct timespec ts;
+    fflush(stdout);
+    if (ms<=0) return;
+    ts.tv_sec=ms/1000;
+    ts.tv_nsec=(long)(ms%1000)*1000000L;
+    nanosleep(&ts,NULL);
+}
+"""
 
 
 def p(s, end='\n'):
@@ -40,13 +131,13 @@ def out_header():
     p("#include <stdlib.h>")
     p("#include <string.h>")
     p("#include <time.h>")
+    p(KBD_C)
     p("static short A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z,reminder;")
     p("static unsigned char memory[65536]={0};")
     p("static int tmp;")
     p(f"static int retstack[{RETSTACK_SIZE}];")
     p("static int retsp=0;")
     p(f"static int forto[{FORSTACK_SIZE}];")
-    p("static int formode=0;")
     p("static void gosub_errchk(void) {")
     p(f"    if (retsp>={RETSTACK_SIZE}) {{ fprintf(stderr,\"gosub stack overflow\\n\"); exit(1); }}")
     p("}")
@@ -162,6 +253,10 @@ def term(s, idx):
     elif s[idx] == '%':                       # remainder
         (o, idx) = term(s, idx + 1)
         return "(reminder)", idx
+
+    elif s[idx] == '&':                       # key state
+        (o, idx) = term(s, idx + 1)
+        return "game_key(" + o + ")", idx
 
     elif s[idx] == '$':                       # getch
         return "game_getch()", idx + 1
@@ -338,9 +433,12 @@ def statement(s):
         idx = 3
         if cmd == 'QU':
             p("fflush(stdout); exit(0); ", end='')
-        elif cmd == 'FM':
+        elif cmd == 'WT':          # wait n milliseconds
             (o, idx) = expression(s, 3)
-            p(f"formode={o}; ", end='')
+            p(f"game_wait({o}); ", end='')
+        elif cmd == 'FM':          # FOR mode is not supported: ignored
+            (o, idx) = expression(s, 3)
+            p(f"(void)({o}); ", end='')
         else:
             idx = len(s)   # TN/TF/LD/SH: not supported when compiled
         return idx
@@ -397,7 +495,7 @@ def statement(s):
                     print("FOR nesting too deep")
                     sys.exit(1)
                 p(f"forto[{d}]={to}; ", end='')
-                p(f"if (!(formode && {ch}>forto[{d}])) do {{ ", end='')
+                p("do { ", end='')
                 loopstack.append(("for", ch, d))
             return idx
 
@@ -411,7 +509,15 @@ def close_for(kind, v):
 
 
 def parse(l):
-    for s in l:
+    l = list(l)
+    k = 0
+    while k < len(l):
+        s = l[k]
+        k += 1
+        # *WT n / *FM n: the argument is written after a space
+        if len(s) == 3 and s[0] == '*' and s[1:].upper() in ('WT', 'FM') and k < len(l):
+            s += l[k]
+            k += 1
         while s:
             idx = statement(s)
             if idx <= 0:
