@@ -8,6 +8,17 @@
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <termios.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#ifdef __linux__
+#include <linux/input.h>
+#else
+#include <dev/evdev/input.h>
+#endif
 
 /* ---- スタックスロット（Go の interface{} に相当） ---- */
 enum slot_kind { SK_STR, SK_INT, SK_I16 };
@@ -259,6 +270,132 @@ static int readByteOrZero(void) {
     return (ch == EOF) ? 0 : (unsigned char)ch;
 }
 
+/* ---- キー入力デバイス（& 項） ---- */
+
+#define KBD_MAX 16
+
+static int kbdFd[KBD_MAX];
+static int kbdCount = -1;               /* -1: まだ開いていない */
+/* bit0: 押されている, bit1: 前回の問い合わせ以降に押された */
+static unsigned char keyState[KEY_CNT];
+static struct termios ttySaved;
+static int ttyChanged = 0;
+
+/* ttyRestore: 端末設定を戻し、ゲーム中に溜まったキー入力を捨てる */
+static void ttyRestore(void) {
+    if (ttyChanged) {
+        tcflush(0, TCIFLUSH);
+        tcsetattr(0, TCSANOW, &ttySaved);
+        ttyChanged = 0;
+    }
+}
+
+static void kbdSignal(int sig) {
+    ttyRestore();
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+/* isKeyboard: A, Z, Enter キーを持つデバイスをキーボードとみなす */
+static int isKeyboard(int fd) {
+    unsigned long bits[KEY_CNT / (8 * sizeof(long)) + 1];
+    size_t w = 8 * sizeof(long);
+
+    memset(bits, 0, sizeof(bits));
+    if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(bits)), bits) < 0) {
+        return 0;
+    }
+    return ((bits[KEY_A / w] >> (KEY_A % w)) & 1) &&
+           ((bits[KEY_Z / w] >> (KEY_Z % w)) & 1) &&
+           ((bits[KEY_ENTER / w] >> (KEY_ENTER % w)) & 1);
+}
+
+/* kbdOpen: MIEP_KBD のデバイス、なければ /dev/input/event* のキーボードを全部開く */
+static void kbdOpen(void) {
+    const char *dev = getenv("MIEP_KBD");
+    char path[64];
+    int i, fd;
+    int denied = 0;
+
+    kbdCount = 0;
+    if (dev != NULL && *dev != '\0') {
+        fd = open(dev, O_RDONLY | O_NONBLOCK);
+        if (fd < 0) {
+            fprintf(stderr, "%s: %s\n", dev, strerror(errno));
+            exit(1);
+        }
+        kbdFd[kbdCount++] = fd;
+    } else {
+        for (i = 0; i < 64 && kbdCount < KBD_MAX; i++) {
+            snprintf(path, sizeof(path), "/dev/input/event%d", i);
+            fd = open(path, O_RDONLY | O_NONBLOCK);
+            if (fd < 0) {
+                if (errno == EACCES) {
+                    denied = 1;
+                }
+                continue;
+            }
+            if (isKeyboard(fd)) {
+                kbdFd[kbdCount++] = fd;
+            } else {
+                close(fd);
+            }
+        }
+        if (kbdCount == 0) {
+            fprintf(stderr, denied
+                    ? "/dev/input/event*: Permission denied\n"
+                    : "No keyboard found in /dev/input/event*\n");
+            exit(1);
+        }
+    }
+
+    /* 押したキーが端末に表示されないようにする */
+    if (isatty(0) && tcgetattr(0, &ttySaved) == 0) {
+        struct termios t = ttySaved;
+        t.c_lflag &= ~(ECHO | ICANON);
+        tcsetattr(0, TCSANOW, &t);
+        ttyChanged = 1;
+        atexit(ttyRestore);
+        signal(SIGINT, kbdSignal);
+        signal(SIGTERM, kbdSignal);
+        signal(SIGHUP, kbdSignal);
+    }
+}
+
+/* kbdPoll: 届いているキーイベントを全部読んで keyState を更新 */
+static void kbdPoll(void) {
+    struct input_event ev;
+    int i;
+
+    for (i = 0; i < kbdCount; i++) {
+        while (read(kbdFd[i], &ev, sizeof(ev)) == (ssize_t)sizeof(ev)) {
+            if (ev.type == EV_KEY && ev.code < KEY_CNT) {
+                if (ev.value != 0) {
+                    keyState[ev.code] |= 3;
+                } else {
+                    keyState[ev.code] &= ~1;
+                }
+            }
+        }
+    }
+}
+
+/* keyPressed: & 項。キーコード code が押されていれば 1 */
+static int16_t keyPressed(int16_t code) {
+    int16_t v;
+
+    if (kbdCount < 0) {
+        kbdOpen();
+    }
+    kbdPoll();
+    if (code < 0 || code >= KEY_CNT) {
+        return 0;
+    }
+    v = (keyState[code] != 0);
+    keyState[code] &= ~2;
+    return v;
+}
+
 /* term: 項（オペランド）を解析 */
 static int16_t term(Miep *m) {
     int16_t v;
@@ -304,6 +441,13 @@ static int16_t term(Miep *m) {
             /* 単純変数 */
             return m->variables[varIdx];
         }
+    }
+
+    /* キー状態 &n */
+    if (currentChar(m) == '&') {
+        advance(m, 1);
+        v = term(m);
+        return keyPressed(v);
     }
 
     /* getch - 1文字読み込み */
@@ -657,6 +801,16 @@ static void optionalCommand(Miep *m) {
         } else if (c1 == 'S' && c2 == 'H') {
             /* Shell - セキュリティ上未実装 */
             printf("Shell command not supported\n");
+        } else if (c1 == 'W' && c2 == 'T') {
+            /* n ミリ秒待つ */
+            int16_t v = expression(m);
+            fflush(stdout);
+            if (v > 0) {
+                struct timespec ts;
+                ts.tv_sec = v / 1000;
+                ts.tv_nsec = (long)(v % 1000) * 1000000L;
+                nanosleep(&ts, NULL);
+            }
         } else if (c1 == 'F' && c2 == 'M') {
             int16_t v = expression(m);
             m->forMode = (int)v;
