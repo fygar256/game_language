@@ -72,7 +72,7 @@ RIGHT はテンキーでも、上段の数字キーでも操作できます。`q
 
 ## 原作との違い
 
-- `&` と `*WT` は C 版の `miep` だけの機能です。`miep.py` や `beam.py` では動きません。
+- `&` と `*WT` は C 版の `miep` と `beam.py` だけの機能です。`miep.py` では動きません。
 
 ---
 
@@ -152,4 +152,4 @@ Change these on line 100 of `ahonokotank.gm`.
 
 ## Differences from the original
 
-- `&` and `*WT` are available only in the C version of `miep`. They do not work in `miep.py` or `beam.py`.
+- `&` and `*WT` are available only in the C version of `miep` and in `beam.py`. They do not work in `miep.py`.
