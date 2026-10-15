@@ -486,10 +486,12 @@ class Miep:
             varIdx = self.slotInt(self.sp - 1) if self.sp >= 1 else 0
             self.sp -= 1
 
+            old = self.variables[varIdx]
             v = self.expression()
             self.variables[varIdx] = v
 
-            if v <= toVal:
+            # 値が減ったら降順 (v >= toVal の間)、それ以外は昇順 (v <= toVal の間)
+            if (v >= toVal) if v < old else (v <= toVal):
                 self.setS(savedS)
                 self.pos = savedPos
                 self.push(varIdx)

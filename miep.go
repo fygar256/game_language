@@ -491,10 +491,12 @@ func (m *MiepInterpreter) nextLoop() {
 		m.sp--
 		m.stack = m.stack[:m.sp]
 
+		old := m.variables[varIdx]
 		v := m.expression()
 		m.variables[varIdx] = v
 
-		if v <= toVal {
+		// descending (while v >= toVal) if the value decreased, otherwise ascending (while v <= toVal)
+		if (v < old && v >= toVal) || (v >= old && v <= toVal) {
 			m.s = savedS
 			m.pos = savedPos
 			m.stack = append(m.stack, varIdx)

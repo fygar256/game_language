@@ -9,16 +9,25 @@ Semantics follow the miep.py interpreter:
   * expressions are evaluated strictly left to right (no precedence)
   * unary + is abs(), ' is random (0..n-1), % is the last remainder
   * '/' keeps the remainder and the expression continues after it
-  * FOR runs its body at least once and loops while var <= limit
-    (the limit is evaluated once)
+  * FOR runs its body at least once and loops while var <= limit, or while
+    var >= limit when NEXT decreased the variable (the limit is evaluated once)
   * &n is 1 while the key with key code n is pressed (read from /dev/input/eventN;
     MIEP_KBD selects the device), like miep.c
   * *QU quits, *WT n waits n milliseconds, other * commands (including *FM) are ignored
+
+Portability: when the program uses no *WT command and no & term, the generated
+C is strictly conforming standard C (C89 or later) with no machine dependence:
+values wrap to 16 bits explicitly, word memory is little endian byte by byte,
+addresses wrap to 64KB, division does not depend on the C rounding rule, and
+operands with side effects ($ ? ' / %) are evaluated left to right.
+The POSIX/evdev key functions are added only when & is used, and the POSIX
+wait function only when *WT is used.
 """
 import sys
 import re
 import os
 import subprocess
+import io
 
 lines = []
 cp = 0
@@ -27,8 +36,12 @@ outfile = None
 gosub_count = 0     # number of gosub call sites (return-point ids)
 RETSTACK_SIZE = 256 # depth of the gosub return stack
 FORSTACK_SIZE = 64  # max nesting depth of FOR loops
+FORTO_SIZE = 4096   # FOR limits of all active GOSUB levels
+need_key = False    # True when & terms are used (POSIX/evdev key input)
+need_wait = False   # True when *WT is used (POSIX nanosleep)
+tmp_count = 0       # number of temporaries gt[] used for left-to-right order
 
-# Key input device (& term) and *WT; same behavior as miep.c
+# Key input device (& term); same behavior as miep.c
 KBD_C = r"""
 #include <errno.h>
 #include <fcntl.h>
@@ -90,10 +103,9 @@ static void kbdOpen(void) {
         signal(SIGINT,kbdSignal); signal(SIGTERM,kbdSignal); signal(SIGHUP,kbdSignal);
     }
 }
-static short game_key(int code) {
+static int game_key(int code) {
     struct input_event ev;
-    int i;
-    short v;
+    int i,v;
     if (kbdCount<0) kbdOpen();
     for (i=0;i<kbdCount;i++) {
         while (read(kbdFd[i],&ev,sizeof(ev))==(ssize_t)sizeof(ev)) {
@@ -107,6 +119,10 @@ static short game_key(int code) {
     keyState[code]&=~2;
     return v;
 }
+"""
+
+# *WT n: wait n milliseconds
+WAIT_C = r"""
 static void game_wait(int ms) {
     struct timespec ts;
     fflush(stdout);
@@ -131,46 +147,93 @@ def out_header():
     p("#include <stdlib.h>")
     p("#include <string.h>")
     p("#include <time.h>")
-    p(KBD_C)
-    p("static short A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z,reminder;")
-    p("static unsigned char memory[65536]={0};")
-    p("static int tmp;")
+    if need_key:
+        p(KBD_C)
+    if need_wait:
+        p(WAIT_C)
+    # all values are int in -32768..32767 (int has at least 16 bits)
+    p("static int A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z,reminder;")
+    p("static unsigned char memory[65536];")
+    p("static int tmp,ga,gw,gp;")
+    if tmp_count:
+        p(f"static int gt[{tmp_count}];")
     p(f"static int retstack[{RETSTACK_SIZE}];")
     p("static int retsp=0;")
-    p(f"static int forto[{FORSTACK_SIZE}];")
-    p("static void gosub_errchk(void) {")
-    p(f"    if (retsp>={RETSTACK_SIZE}) {{ fprintf(stderr,\"gosub stack overflow\\n\"); exit(1); }}")
+    # FOR limits: forto[fbase+depth]; a GOSUB moves fbase past the FOR loops
+    # open at the call site so that loops in the subroutine do not overwrite them
+    p(f"static int forto[{FORTO_SIZE}];")
+    p("static int fbase=0;")
+    p(f"static int fbstack[{RETSTACK_SIZE}];")
+    p("static void gosub_push(int k,int d) {")
+    p(f"    if (retsp>={RETSTACK_SIZE} || fbase+d>{FORTO_SIZE - FORSTACK_SIZE}) {{ fprintf(stderr,\"gosub stack overflow\\n\"); exit(1); }}")
+    p("    fbstack[retsp]=fbase;")
+    p("    retstack[retsp++]=k;")
+    p("    fbase+=d;")
     p("}")
-    p("static short input_num(void) {")
+    # wrap to a 16 bit two's complement value without implementation-defined conversions
+    p("static int w16(long v) {")
+    p("    unsigned long u=(unsigned long)v&0xFFFFUL;")
+    p("    return u>=0x8000UL ? (int)((long)u-65536L) : (int)u;")
+    p("}")
+    p("static unsigned gaddr(long a) {")
+    p("    return (unsigned)((unsigned long)a&0xFFFFUL);")
+    p("}")
+    p("static int gneg(int a) {")
+    p("    return w16(-(long)a);")
+    p("}")
+    p("static int gabs(int a) {")
+    p("    return a<0 ? gneg(a) : a;")
+    p("}")
+    # 16 bit memory access, little endian (same as miep.c)
+    p("static int peekw(long a) {")
+    p("    unsigned ad=gaddr(a);")
+    p("    return w16((long)memory[ad]|((long)memory[gaddr(ad+1L)]<<8));")
+    p("}")
+    p("static void pokeb(long a,int v) {")
+    p("    memory[gaddr(a)]=(unsigned char)((unsigned)v&0xFFu);")
+    p("}")
+    p("static void pokew(long a,int v) {")
+    p("    unsigned ad=gaddr(a);")
+    p("    memory[ad]=(unsigned char)((unsigned)v&0xFFu);")
+    p("    memory[gaddr(ad+1L)]=(unsigned char)(((unsigned)v>>8)&0xFFu);")
+    p("}")
+    p("static int input_num(void) {")
+    p("    char buf[256];")
     p("    int c;")
-    p("    tmp=0;")
     p("    fflush(stdout);")
-    p("    if (scanf(\"%d\",&tmp)==EOF) return 0;")
-    p("    while ((c=getchar())!='\\n' && c!=EOF);")
-    p("    return (short)tmp;")
+    p("    if (fgets(buf,(int)sizeof(buf),stdin)==NULL) return 0;")
+    p("    if (strchr(buf,'\\n')==NULL) while ((c=getchar())!='\\n' && c!=EOF);")
+    p("    return w16(strtol(buf,NULL,10));")
     p("}")
     # read one character (output is flushed first, like the interpreter)
-    p("static short game_getch(void) {")
+    p("static int game_getch(void) {")
     p("    int c;")
     p("    fflush(stdout);")
     p("    c=getchar();")
-    p("    return (short)(c==EOF ? 0 : c);")
+    p("    return c==EOF ? 0 : c;")
     p("}")
-    # division with remainder, Python-style (same as the interpreter)
-    p("static short gdiv(int a,int b) {")
-    p("    int q,r;")
-    p("    if (b==0) { printf(\"Division by zero\\n\"); return -1; }")
-    p("    q=a/b; r=a%b;")
-    p("    if (r!=0 && ((r<0)!=(b<0))) { r+=b; q--; }")
-    p("    reminder=(short)r;")
-    p("    return (short)q;")
+    # division with remainder, Python-style (same as the interpreter);
+    # computed on non-negative operands so C's rounding rule does not matter
+    p("static int gdiv(int a,int b) {")
+    p("    long x=a,y=b,q,r;")
+    p("    if (y==0) { printf(\"Division by zero\\n\"); return -1; }")
+    p("    q=(x<0 ? -x : x)/(y<0 ? -y : y);")
+    p("    if ((x<0)!=(y<0)) q=-q;")
+    p("    r=x-q*y;")
+    p("    if (r!=0 && ((r<0)!=(y<0))) { r+=y; q--; }")
+    p("    reminder=w16(r);")
+    p("    return w16(q);")
     p("}")
     # random number 0..n-1 (0 when n<=0)
-    p("static short grand(int n) {")
-    p("    return (short)(n>0 ? rand()%n : 0);")
+    p("static int grand(int n) {")
+    p("    return n>0 ? rand()%n : 0;")
     p("}")
-    p("int main() {")
-    p("    srand((unsigned)time(NULL));")
+    p("int main(void) {")
+    p("    time_t now=time(NULL);")
+    p("    unsigned seed=0;")
+    p("    size_t i;")
+    p("    for (i=0;i<sizeof(now);i++) seed=seed*31u+((unsigned char *)&now)[i];")
+    p("    srand(seed);")
     return
 
 
@@ -179,7 +242,8 @@ def out_tailer():
     # Return dispatcher: pop a return-point id and jump to its label.
     p("game_return:")
     p("    if (retsp<=0) exit(0);")
-    p("    switch (retstack[--retsp]) {")
+    p("    fbase=fbstack[--retsp];")
+    p("    switch (retstack[retsp]) {")
     for k in range(gosub_count):
         p(f"    case {k}: goto r{k};")
     p("    }")
@@ -193,12 +257,29 @@ def xdigit(c):
     return c.upper() in '0123456789ABCDEF'
 
 
+def cint(v):
+    """C literal for v wrapped to a signed 16 bit value."""
+    v &= 0xFFFF
+    if v >= 0x8000:
+        v -= 0x10000
+    if v == -32768:
+        return "(-32767-1)"
+    return f"({v})" if v < 0 else str(v)
+
+
+def new_tmp():
+    global tmp_count
+    k = tmp_count
+    tmp_count += 1
+    return f"gt[{k}]"
+
+
 def gethexstr(s, idx):
-    d = "0x"
+    d = ""
     while idx < len(s) and s[idx].upper() in '0123456789ABCDEF':
         d = d + s[idx]
         idx += 1
-    return (d, idx)
+    return (cint(int(d, 16)), idx)
 
 
 def getdcmstr(s, idx):
@@ -217,49 +298,52 @@ def skip_alpha(s, idx):
 
 
 def term(s, idx):
+    """Returns (C code, next index, impure). impure: has side effects or reads %."""
+    global need_key
     if idx >= len(s):
-        return "0", len(s)
+        return "0", len(s), False
 
     if s[idx] == '(':
-        (o, idx) = expression(s, idx + 1)
+        (o, idx, imp) = expr3(s, idx + 1)
         if idx < len(s) and s[idx] == ')':
             idx += 1
-        return ("(" + o + ")", idx)
+        return ("(" + o + ")", idx, imp)
 
     elif s[idx] == '$' and idx + 1 < len(s) and xdigit(s[idx + 1]):
         (o, idx) = gethexstr(s, idx + 1)
-        return (o, idx)
+        return (o, idx, False)
 
     elif s[idx] in "0123456789":
         (o, idx) = getdcmstr(s, idx)
-        return (o, idx)
+        return (cint(int(o)), idx, False)
 
     elif s[idx] == '-':
-        (o, idx) = term(s, idx + 1)
-        return "(-(" + o + "))", idx
+        (o, idx, imp) = term(s, idx + 1)
+        return "gneg(" + o + ")", idx, imp
 
     elif s[idx] == '+':                       # abs
-        (o, idx) = term(s, idx + 1)
-        return "abs(" + o + ")", idx
+        (o, idx, imp) = term(s, idx + 1)
+        return "gabs(" + o + ")", idx, imp
 
     elif s[idx] == '#':                       # not
-        (o, idx) = term(s, idx + 1)
-        return "(!(" + o + "))", idx
+        (o, idx, imp) = term(s, idx + 1)
+        return "(!(" + o + "))", idx, imp
 
     elif s[idx] == '\'':                      # random
-        (o, idx) = term(s, idx + 1)
-        return "grand(" + o + ")", idx
+        (o, idx, imp) = term(s, idx + 1)
+        return "grand(" + o + ")", idx, True
 
     elif s[idx] == '%':                       # remainder
-        (o, idx) = term(s, idx + 1)
-        return "(reminder)", idx
+        (o, idx, imp) = term(s, idx + 1)
+        return "(reminder)", idx, True
 
     elif s[idx] == '&':                       # key state
-        (o, idx) = term(s, idx + 1)
-        return "game_key(" + o + ")", idx
+        need_key = True
+        (o, idx, imp) = term(s, idx + 1)
+        return "game_key(" + o + ")", idx, True
 
     elif s[idx] == '$':                       # getch
-        return "game_getch()", idx + 1
+        return "game_getch()", idx + 1, True
 
     elif s[idx] == '"':                       # character constant (1 or 2 chars)
         j = s.find('"', idx + 1)
@@ -267,33 +351,41 @@ def term(s, idx):
             j = len(s)
         body = s[idx + 1:j]
         v = (ord(body[0]) if len(body) > 0 else 0) + ((ord(body[1]) * 256) if len(body) > 1 else 0)
-        return str(v & 0xFFFF), min(j + 1, len(s))
+        return cint(v), min(j + 1, len(s)), False
 
     elif s[idx] == '?':
-        return "input_num()", idx + 1
+        return "input_num()", idx + 1, True
 
     elif s[idx].isalpha():
         l = s[idx].upper()
         nidx = skip_alpha(s, idx)
         if nidx < len(s) and s[nidx] == ':':  # 8 bit array
-            p_, idx = expression(s, nidx + 1)
+            p_, idx, imp = expr3(s, nidx + 1)
             if idx < len(s) and s[idx] == ')':
                 idx += 1
-            return "memory[" + l + "+(" + p_ + ")]", idx
+            return "memory[gaddr((long)" + l + "+(" + p_ + "))]", idx, imp
 
         elif nidx < len(s) and s[nidx] == '(':  # 16 bit array
-            p_, idx = expression(s, nidx + 1)
+            p_, idx, imp = expr3(s, nidx + 1)
             if idx < len(s) and s[idx] == ')':
                 idx += 1
-            return "*((short *)(&memory[" + l + "+(" + p_ + ")*2]))", idx
+            return "peekw((long)" + l + "+2L*(" + p_ + "))", idx, imp
 
         else:  # variable
-            return l, nidx
-    return "0", idx + 1
+            return l, nidx, False
+    return "0", idx + 1, False
+
+
+def binop(op, w, v):
+    if op == '/':
+        return "gdiv(" + w + "," + v + ")"   # continue with the next operator
+    if op in '+-*':
+        return "w16((long)(" + w + ")" + op + "(" + v + "))"
+    return "((" + w + ")" + op + "(" + v + "))"
 
 
 def expression0(s, idx):
-    (w, idx) = term(s, idx)
+    (w, idx, wimp) = term(s, idx)
     while True:
         if idx >= len(s):
             break
@@ -329,30 +421,49 @@ def expression0(s, idx):
             idx += 1
         else:
             break
-        (v, idx) = term(s, idx)
-        if op == '/':
-            w = "gdiv(" + w + "," + v + ")"   # continue with the next operator
+        (v, idx, vimp) = term(s, idx)
+        if wimp and vimp:
+            # C leaves the operand order unspecified: store the left side first
+            t = new_tmp()
+            w = "(" + t + "=" + w + "," + binop(op, t, v) + ")"
         else:
-            w = "(" + w + op + v + ")"
-    return w, idx
+            w = binop(op, w, v)
+        wimp = wimp or vimp or op == '/'
+    return w, idx, wimp
+
+
+def expr3(s, idx):
+    sidx = idx
+    (o, idx, imp) = expression0(s, idx)
+    if sidx == idx:
+        idx += 1
+    return (o, idx, imp)
 
 
 def expression(s, idx):
-    sidx = idx
-    (o, idx) = expression0(s, idx)
-    if sidx == idx:
-        idx += 1
+    (o, idx, imp) = expr3(s, idx)
     return (o, idx)
 
 
 def c_string(body):
-    """Make a C string literal from GAME string contents."""
-    return '"' + body.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    """Make a C string literal from GAME string contents.
+    Characters outside C's basic character set are written as octal escapes
+    and ? is escaped so that no trigraph can appear."""
+    out = []
+    for b in body.encode('utf-8'):
+        c = chr(b)
+        if c in '\\"?':
+            out.append('\\' + c)
+        elif 0x20 <= b < 0x7f and c not in '$@`':
+            out.append(c)
+        else:
+            out.append('\\%03o' % b)
+    return '"' + ''.join(out) + '"'
 
 
 def statement(s):
     """Compile one statement at the head of s. Returns the index after it."""
-    global loopstack
+    global loopstack, need_wait
 
     if s[0:2] == '#=':                                    # GOTO
         if s[2:3] == '-':
@@ -375,27 +486,30 @@ def statement(s):
 
     if s[0:3] == '??=':
         (o, idx) = expression(s, 3)
-        p(f"printf(\"%04x\",(unsigned short)({o})); ", end='')
+        p(f"printf(\"%04x\",(unsigned)({o})&0xFFFFu); ", end='')
         return idx
 
     if s[0:3] == '?$=':
         (o, idx) = expression(s, 3)
-        p(f"printf(\"%02x\",(unsigned char)({o})); ", end='')
+        p(f"printf(\"%02x\",(unsigned)({o})&0xFFu); ", end='')
         return idx
 
     if s[0:2] == '?(':
-        w, idx = expression(s, 2)
+        w, idx, wimp = expr3(s, 2)
         if s[idx:idx + 2] == ')=':
             idx += 2
         elif s[idx:idx + 1] == '=':
             idx += 1
-        v, idx = expression(s, idx)
-        p(f"printf(\"%*d\",(int)({w}),(short)({v})); ", end='')
+        v, idx, vimp = expr3(s, idx)
+        if wimp and vimp:
+            p(f"gw={w}; ", end='')
+            w = "gw"
+        p(f"printf(\"%*d\",({w}),({v})); ", end='')
         return idx
 
     if s[0:2] == '?=':
         (o, idx) = expression(s, 2)
-        p(f"printf(\"%d\",(short)({o})); ", end='')
+        p(f"printf(\"%d\",({o})); ", end='')
         return idx
 
     if s[0:2] == '$=':
@@ -405,12 +519,12 @@ def statement(s):
 
     if s[0:2] == '.=':
         (o, idx) = expression(s, 2)
-        p(f"for(tmp=0;tmp<({o});tmp++) putchar(' '); ", end='')
+        p(f"gw={o}; for(tmp=0;tmp<gw;tmp++) putchar(' '); ", end='')
         return idx
 
     if s[0:2] == '\'=':
         (o, idx) = expression(s, 2)
-        p(f"srand({o}); ", end='')
+        p(f"srand((unsigned)({o})); ", end='')
         return idx
 
     if s[0] == ']':                                       # RETURN
@@ -434,6 +548,7 @@ def statement(s):
         if cmd == 'QU':
             p("fflush(stdout); exit(0); ", end='')
         elif cmd == 'WT':          # wait n milliseconds
+            need_wait = True
             (o, idx) = expression(s, 3)
             p(f"game_wait({o}); ", end='')
         elif cmd == 'FM':          # FOR mode is not supported: ignored
@@ -470,19 +585,25 @@ def statement(s):
         ch = s[0].upper()
         i = skip_alpha(s, 0)
         if s[i:i + 1] == ':':                             # 8 bit array
-            v, idx = expression(s, i + 1)
+            v, idx, vimp = expr3(s, i + 1)
             if s[idx:idx + 2] == ')=':
                 idx += 2
-            w, idx = expression(s, idx)
-            p(f"memory[{ch}+({v})]=({w}); ", end='')
+            w, idx, wimp = expr3(s, idx)
+            if vimp and wimp:
+                p(f"ga={v}; ", end='')
+                v = "ga"
+            p(f"pokeb((long){ch}+({v}),{w}); ", end='')
             return idx
 
         if s[i:i + 1] == '(':                             # 16 bit array
-            v, idx = expression(s, i + 1)
+            v, idx, vimp = expr3(s, i + 1)
             if s[idx:idx + 2] == ')=':
                 idx += 2
-            w, idx = expression(s, idx)
-            p(f"*((short *)(&memory[{ch}+({v})*2]))=({w}); ", end='')
+            w, idx, wimp = expr3(s, idx)
+            if vimp and wimp:
+                p(f"ga={v}; ", end='')
+                v = "ga"
+            p(f"pokew((long){ch}+2L*({v}),{w}); ", end='')
             return idx
 
         if s[i:i + 1] == '=':                             # assignment
@@ -494,7 +615,7 @@ def statement(s):
                 if d >= FORSTACK_SIZE:
                     print("FOR nesting too deep")
                     sys.exit(1)
-                p(f"forto[{d}]={to}; ", end='')
+                p(f"forto[fbase+{d}]={to}; ", end='')
                 p("do { ", end='')
                 loopstack.append(("for", ch, d))
             return idx
@@ -505,7 +626,7 @@ def statement(s):
 
 def close_for(kind, v):
     ch, d = kind[1], kind[2]
-    p(f"{ch}={v}; }} while({ch}<=forto[{d}]); ", end='')
+    p(f"gp={ch}; {ch}={v}; }} while({ch}<gp ? {ch}>=forto[fbase+{d}] : {ch}<=forto[fbase+{d}]); ", end='')
 
 
 def parse(l):
@@ -547,8 +668,8 @@ def gosub(n):
     global gosub_count
     k = gosub_count
     gosub_count += 1
-    p("gosub_errchk(); ", end='')
-    p(f"retstack[retsp++]={k}; ", end='')
+    d = sum(1 for e in loopstack if e[0] == "for")
+    p(f"gosub_push({k},{d}); ", end='')
     goto(n)
     p(f"r{k}: ; ", end='')
     return
@@ -600,14 +721,21 @@ def pass2(file):
 
 
 def compile_to_c(srcfile, cfile="file.c"):
-    global outfile, gosub_count, loopstack
+    global outfile, gosub_count, loopstack, need_key, need_wait, tmp_count
     gosub_count = 0
     loopstack = []
+    need_key = False
+    need_wait = False
+    tmp_count = 0
+    # compile the body first: the header depends on what the body uses
+    outfile = io.StringIO()
+    pass1(srcfile)
+    pass2(srcfile)
+    body = outfile.getvalue()
     outfile = open(cfile, "w", encoding="utf-8")
     try:
         out_header()
-        pass1(srcfile)
-        pass2(srcfile)
+        p(body, end='')
         out_tailer()
     finally:
         outfile.close()

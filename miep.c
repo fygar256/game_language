@@ -686,7 +686,7 @@ static void nextLoop(Miep *m) {
         int     savedPos;
         char   *savedS;
         int     varIdx;
-        int16_t v;
+        int16_t v, old;
 
         m->sp -= 3;
         toVal    = m->stack[m->sp + 2].u.i16;
@@ -695,10 +695,12 @@ static void nextLoop(Miep *m) {
         varIdx   = m->stack[m->sp - 1].u.ival;
         m->sp--;
 
+        old = m->variables[varIdx];
         v = expression(m);
         m->variables[varIdx] = v;
 
-        if (v <= toVal) {
+        /* 値が減ったら降順 (v >= toVal の間)、それ以外は昇順 (v <= toVal の間) */
+        if (v < old ? v >= toVal : v <= toVal) {
             m->s = savedS;
             m->slen = m->psize;
             m->pos = savedPos;
