@@ -264,12 +264,6 @@ static int16_t getConstant(Miep *m) {
     return 0;
 }
 
-/* getch / 行入力用の小ヘルパ */
-static int readByteOrZero(void) {
-    int ch = getchar();
-    return (ch == EOF) ? 0 : (unsigned char)ch;
-}
-
 /* ---- キー入力デバイス（& 項） ---- */
 
 #define KBD_MAX 16
@@ -290,10 +284,49 @@ static void ttyRestore(void) {
     }
 }
 
+/* $ の1文字入力中の端末設定（stty -icanon -echo 相当） */
+static struct termios getchSaved;
+static volatile sig_atomic_t getchRaw = 0;
+
+static void getchRestore(void) {
+    if (getchRaw) {
+        tcsetattr(0, TCSANOW, &getchSaved);
+        getchRaw = 0;
+    }
+}
+
 static void kbdSignal(int sig) {
+    getchRestore();
     ttyRestore();
     signal(sig, SIG_DFL);
     raise(sig);
+}
+
+/* readByteOrZero: 1文字読む。端末ならEnterを待たず、エコーもしない */
+static int readByteOrZero(void) {
+    static int sigSet = 0;
+    int ch;
+
+    fflush(stdout);
+    if (isatty(0) && tcgetattr(0, &getchSaved) == 0) {
+        struct termios t = getchSaved;
+        if (!sigSet) {
+            signal(SIGINT, kbdSignal);
+            signal(SIGTERM, kbdSignal);
+            signal(SIGHUP, kbdSignal);
+            sigSet = 1;
+        }
+        t.c_lflag &= ~(ECHO | ICANON);
+        t.c_cc[VMIN] = 1;
+        t.c_cc[VTIME] = 0;
+        getchRaw = 1;
+        tcsetattr(0, TCSANOW, &t);
+        ch = getchar();
+        getchRestore();
+    } else {
+        ch = getchar();
+    }
+    return (ch == EOF) ? 0 : (unsigned char)ch;
 }
 
 /* isKeyboard: A, Z, Enter キーを持つデバイスをキーボードとみなす */

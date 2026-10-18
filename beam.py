@@ -39,13 +39,53 @@ FORSTACK_SIZE = 64  # max nesting depth of FOR loops
 FORTO_SIZE = 4096   # FOR limits of all active GOSUB levels
 need_key = False    # True when & terms are used (POSIX/evdev key input)
 need_wait = False   # True when *WT is used (POSIX nanosleep)
+need_getch = False  # True when $ (1-char input) is used (POSIX termios)
 tmp_count = 0       # number of temporaries gt[] used for left-to-right order
+
+# $ term: read one char without Enter and without echo (stty -icanon -echo);
+# same behavior as miep.c.  Emitted only when $ is used.
+GETCH_C = r"""
+#include <signal.h>
+#include <termios.h>
+#include <unistd.h>
+static struct termios getchSaved;
+static volatile sig_atomic_t getchRaw=0;
+static void getchRestore(void) {
+    if (getchRaw) { tcsetattr(0,TCSANOW,&getchSaved); getchRaw=0; }
+}
+static void getchSignal(int sig) { getchRestore(); signal(sig,SIG_DFL); raise(sig); }
+static int game_getch(void) {
+    static int sigSet=0;
+    int c;
+    fflush(stdout);
+    if (isatty(0) && tcgetattr(0,&getchSaved)==0) {
+        struct termios t=getchSaved;
+        if (!sigSet) {   /* keep kbdSignal if & already set it (it restores both) */
+            static const int sigs[3]={SIGINT,SIGTERM,SIGHUP};
+            int i;
+            void (*h)(int);
+            for (i=0;i<3;i++) { h=signal(sigs[i],getchSignal); if (h!=SIG_DFL) signal(sigs[i],h); }
+            sigSet=1;
+        }
+        t.c_lflag&=~(ECHO|ICANON);
+        t.c_cc[VMIN]=1; t.c_cc[VTIME]=0;
+        getchRaw=1;
+        tcsetattr(0,TCSANOW,&t);
+        c=getchar();
+        getchRestore();
+    } else {
+        c=getchar();
+    }
+    return c==EOF ? 0 : c;
+}
+"""
 
 # Key input device (& term); same behavior as miep.c
 KBD_C = r"""
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stdint.h>
 #include <termios.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
@@ -63,7 +103,7 @@ static int ttyChanged=0;
 static void ttyRestore(void) {
     if (ttyChanged) { tcflush(0,TCIFLUSH); tcsetattr(0,TCSANOW,&ttySaved); ttyChanged=0; }
 }
-static void kbdSignal(int sig) { ttyRestore(); signal(sig,SIG_DFL); raise(sig); }
+static void kbdSignal(int sig) { GETCH_RESTORE ttyRestore(); signal(sig,SIG_DFL); raise(sig); }
 static int isKeyboard(int fd) {
     unsigned long bits[KEY_CNT/(8*sizeof(long))+1];
     size_t w=8*sizeof(long);
@@ -147,8 +187,11 @@ def out_header():
     p("#include <stdlib.h>")
     p("#include <string.h>")
     p("#include <time.h>")
+    if need_getch:
+        p(GETCH_C)
     if need_key:
-        p(KBD_C)
+        # kbdSignal also undoes a $ read in progress when GETCH_C is present
+        p(KBD_C.replace("GETCH_RESTORE ", "getchRestore(); " if need_getch else ""))
     if need_wait:
         p(WAIT_C)
     # all values are int in -32768..32767 (int has at least 16 bits)
@@ -204,13 +247,6 @@ def out_header():
     p("    if (fgets(buf,(int)sizeof(buf),stdin)==NULL) return 0;")
     p("    if (strchr(buf,'\\n')==NULL) while ((c=getchar())!='\\n' && c!=EOF);")
     p("    return w16(strtol(buf,NULL,10));")
-    p("}")
-    # read one character (output is flushed first, like the interpreter)
-    p("static int game_getch(void) {")
-    p("    int c;")
-    p("    fflush(stdout);")
-    p("    c=getchar();")
-    p("    return c==EOF ? 0 : c;")
     p("}")
     # division with remainder, Python-style (same as the interpreter);
     # computed on non-negative operands so C's rounding rule does not matter
@@ -299,7 +335,7 @@ def skip_alpha(s, idx):
 
 def term(s, idx):
     """Returns (C code, next index, impure). impure: has side effects or reads %."""
-    global need_key
+    global need_key, need_getch
     if idx >= len(s):
         return "0", len(s), False
 
@@ -343,6 +379,7 @@ def term(s, idx):
         return "game_key(" + o + ")", idx, True
 
     elif s[idx] == '$':                       # getch
+        need_getch = True
         return "game_getch()", idx + 1, True
 
     elif s[idx] == '"':                       # character constant (1 or 2 chars)
@@ -721,10 +758,11 @@ def pass2(file):
 
 
 def compile_to_c(srcfile, cfile="file.c"):
-    global outfile, gosub_count, loopstack, need_key, need_wait, tmp_count
+    global outfile, gosub_count, loopstack, need_key, need_wait, need_getch, tmp_count
     gosub_count = 0
     loopstack = []
     need_key = False
+    need_getch = False
     need_wait = False
     tmp_count = 0
     # compile the body first: the header depends on what the body uses
